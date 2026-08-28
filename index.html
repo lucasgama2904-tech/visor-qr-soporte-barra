@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Visor QR — Soporte de Barra</title>
+  <meta name="theme-color" content="#e9e5d6" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <canvas id="viewer"></canvas>
+
+  <header id="topbar">
+    <button id="menu-toggle" aria-label="Ver todas las piezas">
+      <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+    </button>
+    <img id="logo" src="./LOGO.svg" alt="INGEPRO" />
+  </header>
+
+  <div id="menu-backdrop" hidden></div>
+  <aside id="menu-panel">
+    <div id="menu-header">
+      <span>Piezas</span>
+      <button id="menu-close" aria-label="Cerrar">✕</button>
+    </div>
+    <div id="menu-list"></div>
+  </aside>
+
+  <div id="loading">Cargando modelo…</div>
+
+  <div id="aviso" hidden></div>
+
+  <div id="ficha" hidden>
+    <div class="ficha-header">
+      <button id="ficha-toggle" aria-label="Colapsar ficha">
+        <span id="f-codigo" class="f-codigo"></span>
+        <span class="chevron">▾</span>
+      </button>
+      <button id="iso-toggle" hidden>Ver pieza aislada</button>
+    </div>
+    <div id="ficha-body">
+      <div class="f-row"><span class="f-label">Perfil</span><span id="f-perfil"></span></div>
+      <div class="f-row"><span class="f-label">Medida</span><span id="f-medida"></span></div>
+      <div class="f-row"><span class="f-label">Cantidad</span><span id="f-cantidad"></span></div>
+      <p id="f-nota" hidden></p>
+    </div>
+  </div>
+
+  <script type="module" src="./app.bundle.js"></script>
+</body>
+</html>

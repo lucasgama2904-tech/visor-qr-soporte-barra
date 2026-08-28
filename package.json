@@ -1,0 +1,27 @@
+{
+  "name": "15.-qr-de-piezas",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "convert": "node tools/convert-ifc.mjs",
+    "build": "node tools/build.mjs",
+    "serve": "npx --yes serve web -l 8080",
+    "verify": "node tools/verify-mapeo.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@thatopen/fragments": "^3.4.7",
+    "camera-controls": "^3.1.2",
+    "three": "^0.185.1",
+    "web-ifc": "^0.0.77"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "playwright": "^1.62.1"
+  }
+}

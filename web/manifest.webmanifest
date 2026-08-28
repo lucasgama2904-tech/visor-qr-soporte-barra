@@ -1,0 +1,9 @@
+{
+  "name": "Visor QR de piezas — Soporte de Barra",
+  "short_name": "Visor QR",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#e9e5d6",
+  "theme_color": "#e9e5d6"
+}

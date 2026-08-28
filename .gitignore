@@ -1,0 +1,15 @@
+node_modules/
+web/app.bundle.js.map
+etiquetas_QR_PRUEBA.pdf
+etiquetas_QR.pdf
+Z27_PAR_TORRE SUBESTACION ACARAY V2.ifc
+
+# Tarjetas QR generadas (tools/generate_qr_cards.py y generate_qr_pdf.py):
+# regenerables en cualquier momento, y llevan grabada la URL que estaba
+# vigente al generarlas. No versionar para no confundir con URLs viejas.
+QR/
+QR_PRUEBA_*.png
+
+# web/app.bundle.js SÍ se versiona: GitHub Pages sirve archivos estáticos
+# directo, sin paso de build. Correr `npm run build` antes de cada commit
+# que toque src/app.js o mapeo_QR.json.

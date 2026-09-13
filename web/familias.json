@@ -1,0 +1,59 @@
+{
+  "_comentario": "Familia constructiva de cada código de mapeo_QR.json. Basado en la marca real de Revit (propiedad Etiqueta/Comentarios del IFC: DS/DN=diagonal sur/norte, DE/DO=diagonal este/oeste, H=horizontal, N/S=montante). Editable a mano: para reasignar un código, cambiar el valor de 'piezas'. Los códigos deben coincidir exactamente con las claves de mapeo_QR.json.",
+
+  "familias": [
+    { "id": "montantes", "nombre": "Montantes verticales" },
+    { "id": "diagonales-sn", "nombre": "Diagonales Sur-Norte" },
+    { "id": "diagonales-eo", "nombre": "Diagonales Este-Oeste" },
+    { "id": "horizontales", "nombre": "Riostras horizontales" },
+    { "id": "placas", "nombre": "Placas y cartelas" }
+  ],
+
+  "piezas": {
+    "102/103": "montantes",
+    "104/105": "montantes",
+    "106": "montantes",
+
+    "501/502": "diagonales-sn",
+    "503/504": "diagonales-sn",
+    "507/508": "diagonales-sn",
+    "513": "diagonales-sn",
+    "518/519": "diagonales-sn",
+    "520": "diagonales-sn",
+    "521": "diagonales-sn",
+    "528": "diagonales-sn",
+
+    "509/510": "diagonales-eo",
+    "512/506": "diagonales-eo",
+    "516/517": "diagonales-eo",
+    "523": "diagonales-eo",
+
+    "201": "horizontales",
+    "203": "horizontales",
+    "301": "horizontales",
+    "302": "horizontales",
+    "401": "horizontales",
+    "524/526": "horizontales",
+    "601/602": "horizontales",
+    "603/604": "horizontales",
+    "605/621": "horizontales",
+    "607/608": "horizontales",
+    "610/612": "horizontales",
+    "613": "horizontales",
+    "614": "horizontales",
+    "615": "horizontales",
+    "617": "horizontales",
+    "618": "horizontales",
+    "620": "horizontales",
+    "701": "horizontales",
+    "702": "horizontales",
+
+    "801": "placas",
+    "802": "placas",
+    "803": "placas",
+    "804": "placas",
+    "805": "placas",
+    "806": "placas",
+    "807": "placas"
+  }
+}

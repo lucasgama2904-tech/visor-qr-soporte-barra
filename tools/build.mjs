@@ -55,3 +55,9 @@ const logoSrc = path.join(root, "LOGO.svg");
 const logoDst = path.join(root, "web", "LOGO.svg");
 fs.copyFileSync(logoSrc, logoDst);
 console.log(`Copiado: ${logoDst}`);
+
+// Copiar las familias constructivas (filtro por familia)
+const familiasSrc = path.join(root, "familias.json");
+const familiasDst = path.join(root, "web", "familias.json");
+fs.copyFileSync(familiasSrc, familiasDst);
+console.log(`Copiado: ${familiasDst}`);

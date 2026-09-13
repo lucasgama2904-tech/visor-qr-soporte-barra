@@ -8,6 +8,7 @@
 import * as THREE from "three";
 import CameraControls from "camera-controls";
 import * as FRAGS from "@thatopen/fragments";
+import { CSS2DRenderer, CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 
 // ---------------------------------------------------------------------------
 // Identidad visual (ver BRIEF_Visor_QR_SoporteBarra.md §5)
@@ -19,7 +20,13 @@ const OPACIDAD_RESTO = 0.25;
 const MODEL_ID = "torre";
 const FRAG_URL = "./modelo.frag";
 const MAPEO_URL = "./mapeo_QR.json";
+const FAMILIAS_URL = "./familias.json";
 const WORKER_URL = "./fragments-worker.mjs";
+
+// Cada cuánto (ms) se recalcula oclusión/solapamiento de etiquetas. No se
+// recalcula si la cámara no se movió desde la última vez: en obra, con el
+// celular quieto leyendo la torre, esto no debe gastar batería de más.
+const INTERVALO_ETIQUETAS_MS = 200;
 
 // ---------------------------------------------------------------------------
 // Estado
@@ -32,6 +39,22 @@ let highlightLocalIds = [];
 let otherLocalIds = [];
 let isolatedView = false; // false = torre completa con pieza resaltada
 let mapeoCache = null;
+
+// --- Familias / filtro (Función 1) ---
+let familiasData = null; // { familias: [{id, nombre}], piezas: { clave: id } }
+let familiasActivas = new Set(); // ids de familia activos en el filtro
+let codigoSeleccionado = null; // clave individual seleccionada (prevalece sobre el filtro)
+let codigoUrlActual = null; // el código tal cual se pidió (para reflejar ?p= sin ambigüedad)
+const localIdsPorClave = new Map(); // caché: clave -> localIds ya resueltos
+
+// --- Modo etiquetas (Función 2) ---
+let modoEtiquetas = false;
+let labelRenderer = null;
+const labelObjects = new Map(); // clave -> { obj: CSS2DObject, anchor: THREE.Vector3 }
+let ultimaActualizacionEtiquetas = 0;
+const ultimaCamPos = new THREE.Vector3();
+const ultimaCamQuat = new THREE.Quaternion();
+let primerChequeoEtiquetas = true;
 
 const $ = (sel) => document.querySelector(sel);
 const els = {
@@ -52,6 +75,9 @@ const els = {
   menuBackdrop: $("#menu-backdrop"),
   menuPanel: $("#menu-panel"),
   menuList: $("#menu-list"),
+  familiaChips: $("#familia-chips"),
+  familiaLimpiar: $("#familia-limpiar"),
+  labelsToggle: $("#labels-toggle"),
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +128,14 @@ function initScene() {
   controls.minDistance = 0.05;
   controls.maxDistance = 500;
 
+  // Modo etiquetas (Función 2): renderer aparte para las tarjetas HTML
+  // ancladas a cada pieza. Se apila sobre el canvas WebGL, sin capturar
+  // toque (pointer-events:none vía CSS) para no interferir con girar/zoom.
+  labelRenderer = new CSS2DRenderer();
+  labelRenderer.domElement.id = "labels-root";
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(labelRenderer.domElement);
+
   window.addEventListener("resize", onResize);
 
   let lastTime = performance.now();
@@ -111,6 +145,10 @@ function initScene() {
     lastTime = now;
     controls.update(delta);
     renderer.render(scene, camera);
+    if (modoEtiquetas) {
+      actualizarEtiquetasFrame(now);
+      labelRenderer.render(scene, camera);
+    }
   });
 }
 
@@ -118,6 +156,7 @@ function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  labelRenderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +198,11 @@ async function initFragments() {
 // ---------------------------------------------------------------------------
 async function cargarMapeo() {
   const res = await fetch(MAPEO_URL);
+  return res.json();
+}
+
+async function cargarFamilias() {
+  const res = await fetch(FAMILIAS_URL);
   return res.json();
 }
 
@@ -205,6 +249,7 @@ function construirMenu(mapeo) {
     const item = document.createElement("button");
     item.type = "button";
     item.className = "menu-item";
+    item.dataset.familia = familiasData?.piezas?.[clave] ?? "";
     item.innerHTML = `<span class="menu-item-code">${clave}</span><span class="menu-item-perfil">${datos.perfil}</span>`;
     item.addEventListener("click", () => {
       cerrarMenu();
@@ -212,6 +257,170 @@ function construirMenu(mapeo) {
     });
     els.menuList.appendChild(item);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Filtro por familia constructiva (chips en el panel "Piezas")
+// ---------------------------------------------------------------------------
+function clavesDeFamilias(idsFamilia) {
+  if (!familiasData || idsFamilia.size === 0) return [];
+  return Object.entries(familiasData.piezas)
+    .filter(([clave, fam]) => idsFamilia.has(fam) && mapeoCache[clave])
+    .map(([clave]) => clave);
+}
+
+async function resolverLocalIds(clave) {
+  if (localIdsPorClave.has(clave)) return localIdsPorClave.get(clave);
+  const datos = mapeoCache[clave];
+  if (!datos) return [];
+  const resueltos = await model.getLocalIdsByGuids(datos.gids);
+  const ids = resueltos.filter((id) => id !== null);
+  localIdsPorClave.set(clave, ids);
+  return ids;
+}
+
+// Resuelve varios códigos de una sola vez, en una única llamada combinada
+// al worker de Fragments (en vez de una llamada por código): pedirle al
+// worker varias resoluciones de GUIDs en paralelo hace que pierda la
+// mayoría de las respuestas en silencio, sin error — se probó con el filtro
+// de familia (19 códigos) y quedó confirmado. Una sola llamada con todos
+// los GUIDs juntos evita el problema y además es más rápida.
+async function resolverLocalIdsDeClaves(claves) {
+  const porResolver = claves.filter((c) => !localIdsPorClave.has(c) && mapeoCache[c]);
+
+  if (porResolver.length > 0) {
+    const guidsCombinados = [];
+    const segmentos = []; // [clave, inicio, cantidad]
+    for (const c of porResolver) {
+      const gids = mapeoCache[c].gids;
+      segmentos.push([c, guidsCombinados.length, gids.length]);
+      guidsCombinados.push(...gids);
+    }
+    const resueltos = await model.getLocalIdsByGuids(guidsCombinados);
+    for (const [c, inicio, cantidad] of segmentos) {
+      const ids = resueltos.slice(inicio, inicio + cantidad).filter((id) => id !== null);
+      localIdsPorClave.set(c, ids);
+    }
+  }
+
+  const idsResaltados = [];
+  for (const c of claves) {
+    idsResaltados.push(...(localIdsPorClave.get(c) ?? []));
+  }
+  return idsResaltados;
+}
+
+function construirChips() {
+  if (!familiasData) return;
+  els.familiaChips.innerHTML = "";
+  for (const fam of familiasData.familias) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    chip.textContent = fam.nombre;
+    chip.dataset.id = fam.id;
+    chip.addEventListener("click", () => onClickChip(fam.id));
+    els.familiaChips.appendChild(chip);
+  }
+  els.familiaLimpiar.addEventListener("click", onLimpiarFiltros);
+}
+
+function actualizarEstadoChips() {
+  els.familiaChips.querySelectorAll(".chip").forEach((chip) => {
+    chip.classList.toggle("activo", familiasActivas.has(chip.dataset.id));
+  });
+  els.familiaLimpiar.hidden = familiasActivas.size === 0;
+  // El modo etiquetas solo tiene sentido con un filtro activo (ver
+  // clavesActivasParaEtiquetas): si no hay familia elegida, no hay nada
+  // que la etiqueta pueda mostrar.
+  els.labelsToggle.hidden = familiasActivas.size === 0;
+}
+
+function aplicarFiltroMenuLista() {
+  els.menuList.querySelectorAll(".menu-item").forEach((item) => {
+    const mostrar = familiasActivas.size === 0 || familiasActivas.has(item.dataset.familia);
+    item.classList.toggle("oculto-por-filtro", !mostrar);
+  });
+}
+
+async function onClickChip(id) {
+  if (familiasActivas.has(id)) familiasActivas.delete(id);
+  else familiasActivas.add(id);
+  await salirDeSeleccionIndividual();
+  actualizarEstadoChips();
+  aplicarFiltroMenuLista();
+  await aplicarFiltroFamilias();
+  actualizarURL();
+}
+
+async function onLimpiarFiltros() {
+  familiasActivas.clear();
+  await salirDeSeleccionIndividual();
+  actualizarEstadoChips();
+  aplicarFiltroMenuLista();
+  await aplicarFiltroFamilias();
+  actualizarURL();
+}
+
+async function salirDeSeleccionIndividual() {
+  codigoSeleccionado = null;
+  codigoUrlActual = null;
+  els.ficha.hidden = true;
+  els.isoBtn.hidden = true;
+  els.aviso.hidden = true;
+}
+
+async function aplicarFiltroFamilias() {
+  // Si hay una pieza puntual seleccionada, su resaltado prevalece: no se
+  // vuelve a pintar la vista de familia encima.
+  if (codigoSeleccionado) return;
+
+  await limpiarResaltadoAnterior();
+
+  if (familiasActivas.size === 0) {
+    await encuadrarTorreCompleta();
+    await actualizarEtiquetas();
+    return;
+  }
+
+  const claves = clavesDeFamilias(familiasActivas);
+  const idsResaltados = await resolverLocalIdsDeClaves(claves);
+  const idsSet = new Set(idsResaltados);
+  const idsResto = allLocalIds.filter((id) => !idsSet.has(id));
+
+  const totalEsperado = claves.reduce((acc, c) => acc + (mapeoCache[c]?.gids?.length ?? 0), 0);
+  if (idsResaltados.length !== totalEsperado) {
+    console.warn(
+      `[visor-qr] filtro por familia (${[...familiasActivas].join(",")}): se esperaban ${totalEsperado} piezas, se resolvieron ${idsResaltados.length}.`,
+    );
+  }
+
+  await model.setColor(idsResto, new THREE.Color(COLOR_RESTO));
+  await model.setOpacity(idsResto, OPACIDAD_RESTO);
+  await model.setColor(idsResaltados, new THREE.Color(COLOR_RESALTADO));
+  await model.setOpacity(idsResaltados, 1);
+  await fragments.update(true);
+
+  if (idsResaltados.length > 0) {
+    const box = await model.getMergedBox(idsResaltados);
+    await controls.fitToBox(box, true, {
+      paddingTop: 0.4,
+      paddingBottom: 0.4,
+      paddingLeft: 0.4,
+      paddingRight: 0.4,
+    });
+  }
+
+  await actualizarEtiquetas();
+}
+
+function actualizarURL() {
+  const url = new URL(window.location.href);
+  if (codigoUrlActual) url.searchParams.set("p", codigoUrlActual);
+  else url.searchParams.delete("p");
+  if (familiasActivas.size > 0) url.searchParams.set("familia", [...familiasActivas].join(","));
+  else url.searchParams.delete("familia");
+  window.history.replaceState(null, "", url);
 }
 
 function abrirMenu() {
@@ -250,18 +459,22 @@ async function seleccionarCodigo(codigo) {
   const entrada = buscarEntrada(mapeoCache, codigo);
 
   if (entrada) {
+    codigoSeleccionado = entrada.clave;
+    codigoUrlActual = codigo;
     await resaltarCodigo(codigo, entrada);
     mostrarFicha(codigo, entrada);
     els.aviso.hidden = true;
-    const url = new URL(window.location.href);
-    url.searchParams.set("p", codigo);
-    window.history.replaceState(null, "", url);
+    actualizarURL();
   } else {
+    codigoSeleccionado = null;
+    codigoUrlActual = null;
     await encuadrarTorreCompleta();
     els.ficha.hidden = true;
     els.isoBtn.hidden = true;
     mostrarAviso(`Código no reconocido: ${codigo}`);
+    actualizarURL();
   }
+  await actualizarEtiquetas();
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +546,183 @@ async function toggleAislado() {
 }
 
 // ---------------------------------------------------------------------------
+// Modo etiquetas (Función 2): tarjeta HTML anclada a cada pieza, en vez de
+// pintarla. Solo muestra piezas del filtro de familia activo — sin filtro,
+// no muestra ninguna.
+// ---------------------------------------------------------------------------
+function clavesActivasParaEtiquetas() {
+  return new Set(clavesDeFamilias(familiasActivas));
+}
+
+async function obtenerOCrearLabel(clave) {
+  if (labelObjects.has(clave)) return labelObjects.get(clave);
+
+  const ids = await resolverLocalIds(clave);
+  if (ids.length === 0) return null;
+
+  const box = await model.getMergedBox(ids);
+  const anchor = box.getCenter(new THREE.Vector3());
+
+  const el = document.createElement("div");
+  el.className = "pieza-label";
+  const perfil = mapeoCache[clave]?.perfil ?? "";
+  el.innerHTML = `<span class="marca">${clave}</span><span class="perfil">${perfil}</span>`;
+
+  const obj = new CSS2DObject(el);
+  // Ancla el borde inferior de la tarjeta al punto exacto de la pieza
+  // (en vez del centro): la tarjeta queda flotando arriba, tocando el
+  // anclaje con su propia punta (ver ::after en style.css), a modo de
+  // línea guía fina sin tener que calcular una línea aparte cada frame.
+  obj.center.set(0.5, 1);
+  obj.position.copy(anchor);
+  obj.visible = false;
+  scene.add(obj);
+
+  const entry = { obj, anchor };
+  labelObjects.set(clave, entry);
+  return entry;
+}
+
+async function actualizarEtiquetas() {
+  if (!modoEtiquetas) return;
+  const claves = clavesActivasParaEtiquetas();
+  // Uno por uno, no Promise.all: pedirle al worker de Fragments varias
+  // resoluciones de GUIDs en paralelo hace que pierda la mayoría de las
+  // respuestas en silencio (sin error) — se probó y quedó documentado.
+  for (const c of claves) {
+    try {
+      await obtenerOCrearLabel(c);
+    } catch (err) {
+      console.error(`[visor-qr] no se pudo crear la etiqueta de ${c}:`, err);
+    }
+  }
+  // Fuerza un recálculo inmediato (no esperar al próximo throttle) para que
+  // el cambio de filtro se note al toque, no 200 ms después.
+  primerChequeoEtiquetas = true;
+  recalcularVisibilidadEtiquetas();
+}
+
+function ocultarTodasLasEtiquetas() {
+  for (const { obj } of labelObjects.values()) obj.visible = false;
+}
+
+let recalculandoEtiquetas = false;
+
+function actualizarEtiquetasFrame(now) {
+  if (now - ultimaActualizacionEtiquetas < INTERVALO_ETIQUETAS_MS) return;
+  ultimaActualizacionEtiquetas = now;
+
+  // Si la cámara no se movió desde el último chequeo, no hay nada que
+  // recalcular: en obra, con el celular quieto leyendo la ficha, esto
+  // ahorra CPU y batería.
+  const camQuietaMisma =
+    !primerChequeoEtiquetas &&
+    camera.position.distanceToSquared(ultimaCamPos) < 1e-8 &&
+    camera.quaternion.angleTo(ultimaCamQuat) < 1e-4;
+  if (camQuietaMisma) return;
+
+  ultimaCamPos.copy(camera.position);
+  ultimaCamQuat.copy(camera.quaternion);
+  primerChequeoEtiquetas = false;
+
+  recalcularVisibilidadEtiquetas();
+}
+
+async function recalcularVisibilidadEtiquetas() {
+  // El raycast de Fragments es async (corre en el worker); si todavía hay
+  // uno en vuelo, no se apilan más — se recalcula en el próximo tick.
+  if (recalculandoEtiquetas) return;
+  recalculandoEtiquetas = true;
+  try {
+    const clavesActivas = clavesActivasParaEtiquetas();
+    const pendientes = [];
+
+    for (const [clave, entry] of labelObjects) {
+      if (!clavesActivas.has(clave)) {
+        entry.obj.visible = false;
+        continue;
+      }
+      pendientes.push({ clave, entry });
+    }
+
+    // Oculta si algo del modelo tapa la pieza desde este ángulo de cámara.
+    // Fragments usa mallas propias (BatchedMesh/LOD) que no son compatibles
+    // con THREE.Raycaster genérico: hay que usar el raycast propio del
+    // modelo, que resuelve en base a un punto de pantalla (mouse en NDC).
+    // Uno por uno (no Promise.all): el worker de Fragments pierde respuestas
+    // en silencio si se lo llama muchas veces en paralelo (ver actualizarEtiquetas).
+    const resultados = [];
+    for (const { clave, entry } of pendientes) {
+      const distanciaAlAnclaje = camera.position.distanceTo(entry.anchor);
+      const ndc = entry.anchor.clone().project(camera);
+      const mouse = new THREE.Vector2(ndc.x, ndc.y);
+      let oculto = false;
+      try {
+        const hit = await model.raycast({ camera, mouse, dom: renderer.domElement });
+        if (hit && hit.distance < distanciaAlAnclaje - 0.05) oculto = true;
+      } catch {
+        oculto = false; // ante la duda, mostrar antes que esconder sin motivo
+      }
+      resultados.push({ clave, entry, distanciaAlAnclaje, oculto, ndc });
+    }
+
+    const candidatos = [];
+    for (const r of resultados) {
+      if (r.oculto) {
+        r.entry.obj.visible = false;
+        continue;
+      }
+      const x = (r.ndc.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-r.ndc.y * 0.5 + 0.5) * window.innerHeight;
+      candidatos.push({ ...r, x, y });
+    }
+
+    // Desempate por solapamiento en pantalla: la más cercana a cámara gana.
+    candidatos.sort((a, b) => a.distanciaAlAnclaje - b.distanciaAlAnclaje);
+    const ANCHO_ETIQUETA = 130;
+    const ALTO_ETIQUETA = 46;
+    const ocupados = [];
+    for (const c of candidatos) {
+      const caja = {
+        izq: c.x - ANCHO_ETIQUETA / 2,
+        der: c.x + ANCHO_ETIQUETA / 2,
+        arr: c.y - ALTO_ETIQUETA,
+        abj: c.y,
+      };
+      const solapa = ocupados.some(
+        (o) => !(caja.der < o.izq || caja.izq > o.der || caja.abj < o.arr || caja.arr > o.abj),
+      );
+      if (solapa) {
+        c.entry.obj.visible = false;
+      } else {
+        c.entry.obj.visible = true;
+        ocupados.push(caja);
+      }
+    }
+  } finally {
+    recalculandoEtiquetas = false;
+  }
+}
+
+function actualizarClaseBotonEtiquetas() {
+  els.labelsToggle.classList.toggle("activo", modoEtiquetas);
+  els.labelsToggle.textContent = modoEtiquetas ? "Ocultar etiquetas" : "Ver etiquetas";
+}
+
+function initLabelsToggle() {
+  modoEtiquetas = sessionStorage.getItem("modoEtiquetas") === "true";
+  actualizarClaseBotonEtiquetas();
+
+  els.labelsToggle.addEventListener("click", async () => {
+    modoEtiquetas = !modoEtiquetas;
+    sessionStorage.setItem("modoEtiquetas", String(modoEtiquetas));
+    actualizarClaseBotonEtiquetas();
+    if (modoEtiquetas) await actualizarEtiquetas();
+    else ocultarTodasLasEtiquetas();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Ficha / UI
 // ---------------------------------------------------------------------------
 function mostrarFicha(codigo, entrada) {
@@ -371,16 +761,30 @@ async function main() {
   initScene();
   initFichaToggle();
   initMenu();
+  initLabelsToggle();
   await initFragments();
 
-  mapeoCache = await cargarMapeo();
+  [mapeoCache, familiasData] = await Promise.all([cargarMapeo(), cargarFamilias()]);
   construirMenu(mapeoCache);
+  construirChips();
 
   const params = new URLSearchParams(window.location.search);
   const codigo = params.get("p")?.trim();
+  const familiaParam = params.get("familia")?.trim();
+
+  if (familiaParam) {
+    const idsValidos = new Set(familiasData.familias.map((f) => f.id));
+    for (const id of familiaParam.split(",").map((s) => s.trim())) {
+      if (idsValidos.has(id)) familiasActivas.add(id);
+    }
+    actualizarEstadoChips();
+    aplicarFiltroMenuLista();
+  }
 
   if (codigo) {
     await seleccionarCodigo(codigo);
+  } else if (familiasActivas.size > 0) {
+    await aplicarFiltroFamilias();
   } else {
     await encuadrarTorreCompleta();
   }

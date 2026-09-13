@@ -4,7 +4,7 @@
 //
 // Subí la versión del cache cada vez que reemplaces modelo.frag o
 // mapeo_QR.json en producción, para forzar la actualización.
-const CACHE = "visor-qr-v3";
+const CACHE = "visor-qr-v4";
 
 const PRECACHE_URLS = [
   "./",
@@ -14,6 +14,7 @@ const PRECACHE_URLS = [
   "./fragments-worker.mjs",
   "./modelo.frag",
   "./mapeo_QR.json",
+  "./familias.json",
   "./manifest.webmanifest",
   "./LOGO.svg",
 ];

@@ -4,7 +4,7 @@
 //
 // Subí la versión del cache cada vez que reemplaces modelo.frag o
 // mapeo_QR.json en producción, para forzar la actualización.
-const CACHE = "visor-qr-v4";
+const CACHE = "visor-qr-v5";
 
 const PRECACHE_URLS = [
   "./",

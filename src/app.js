@@ -8,7 +8,6 @@
 import * as THREE from "three";
 import CameraControls from "camera-controls";
 import * as FRAGS from "@thatopen/fragments";
-import { CSS2DRenderer, CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
 
 // ---------------------------------------------------------------------------
 // Identidad visual (ver BRIEF_Visor_QR_SoporteBarra.md §5)
@@ -22,11 +21,6 @@ const FRAG_URL = "./modelo.frag";
 const MAPEO_URL = "./mapeo_QR.json";
 const FAMILIAS_URL = "./familias.json";
 const WORKER_URL = "./fragments-worker.mjs";
-
-// Cada cuánto (ms) se recalcula oclusión/solapamiento de etiquetas. No se
-// recalcula si la cámara no se movió desde la última vez: en obra, con el
-// celular quieto leyendo la torre, esto no debe gastar batería de más.
-const INTERVALO_ETIQUETAS_MS = 200;
 
 // ---------------------------------------------------------------------------
 // Estado
@@ -46,15 +40,6 @@ let familiasActivas = new Set(); // ids de familia activos en el filtro
 let codigoSeleccionado = null; // clave individual seleccionada (prevalece sobre el filtro)
 let codigoUrlActual = null; // el código tal cual se pidió (para reflejar ?p= sin ambigüedad)
 const localIdsPorClave = new Map(); // caché: clave -> localIds ya resueltos
-
-// --- Modo etiquetas (Función 2) ---
-let modoEtiquetas = false;
-let labelRenderer = null;
-const labelObjects = new Map(); // clave -> { obj: CSS2DObject, anchor: THREE.Vector3 }
-let ultimaActualizacionEtiquetas = 0;
-const ultimaCamPos = new THREE.Vector3();
-const ultimaCamQuat = new THREE.Quaternion();
-let primerChequeoEtiquetas = true;
 
 const $ = (sel) => document.querySelector(sel);
 const els = {
@@ -77,7 +62,6 @@ const els = {
   menuList: $("#menu-list"),
   familiaChips: $("#familia-chips"),
   familiaLimpiar: $("#familia-limpiar"),
-  labelsToggle: $("#labels-toggle"),
 };
 
 // ---------------------------------------------------------------------------
@@ -128,14 +112,6 @@ function initScene() {
   controls.minDistance = 0.05;
   controls.maxDistance = 500;
 
-  // Modo etiquetas (Función 2): renderer aparte para las tarjetas HTML
-  // ancladas a cada pieza. Se apila sobre el canvas WebGL, sin capturar
-  // toque (pointer-events:none vía CSS) para no interferir con girar/zoom.
-  labelRenderer = new CSS2DRenderer();
-  labelRenderer.domElement.id = "labels-root";
-  labelRenderer.setSize(window.innerWidth, window.innerHeight);
-  document.body.appendChild(labelRenderer.domElement);
-
   window.addEventListener("resize", onResize);
 
   let lastTime = performance.now();
@@ -145,10 +121,6 @@ function initScene() {
     lastTime = now;
     controls.update(delta);
     renderer.render(scene, camera);
-    if (modoEtiquetas) {
-      actualizarEtiquetasFrame(now);
-      labelRenderer.render(scene, camera);
-    }
   });
 }
 
@@ -156,7 +128,6 @@ function onResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  labelRenderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 // ---------------------------------------------------------------------------
@@ -330,10 +301,6 @@ function actualizarEstadoChips() {
     chip.classList.toggle("activo", familiasActivas.has(chip.dataset.id));
   });
   els.familiaLimpiar.hidden = familiasActivas.size === 0;
-  // El modo etiquetas solo tiene sentido con un filtro activo (ver
-  // clavesActivasParaEtiquetas): si no hay familia elegida, no hay nada
-  // que la etiqueta pueda mostrar.
-  els.labelsToggle.hidden = familiasActivas.size === 0;
 }
 
 function aplicarFiltroMenuLista() {
@@ -379,7 +346,6 @@ async function aplicarFiltroFamilias() {
 
   if (familiasActivas.size === 0) {
     await encuadrarTorreCompleta();
-    await actualizarEtiquetas();
     return;
   }
 
@@ -410,8 +376,6 @@ async function aplicarFiltroFamilias() {
       paddingRight: 0.4,
     });
   }
-
-  await actualizarEtiquetas();
 }
 
 function actualizarURL() {
@@ -474,7 +438,6 @@ async function seleccionarCodigo(codigo) {
     mostrarAviso(`Código no reconocido: ${codigo}`);
     actualizarURL();
   }
-  await actualizarEtiquetas();
 }
 
 // ---------------------------------------------------------------------------
@@ -546,183 +509,6 @@ async function toggleAislado() {
 }
 
 // ---------------------------------------------------------------------------
-// Modo etiquetas (Función 2): tarjeta HTML anclada a cada pieza, en vez de
-// pintarla. Solo muestra piezas del filtro de familia activo — sin filtro,
-// no muestra ninguna.
-// ---------------------------------------------------------------------------
-function clavesActivasParaEtiquetas() {
-  return new Set(clavesDeFamilias(familiasActivas));
-}
-
-async function obtenerOCrearLabel(clave) {
-  if (labelObjects.has(clave)) return labelObjects.get(clave);
-
-  const ids = await resolverLocalIds(clave);
-  if (ids.length === 0) return null;
-
-  const box = await model.getMergedBox(ids);
-  const anchor = box.getCenter(new THREE.Vector3());
-
-  const el = document.createElement("div");
-  el.className = "pieza-label";
-  const perfil = mapeoCache[clave]?.perfil ?? "";
-  el.innerHTML = `<span class="marca">${clave}</span><span class="perfil">${perfil}</span>`;
-
-  const obj = new CSS2DObject(el);
-  // Ancla el borde inferior de la tarjeta al punto exacto de la pieza
-  // (en vez del centro): la tarjeta queda flotando arriba, tocando el
-  // anclaje con su propia punta (ver ::after en style.css), a modo de
-  // línea guía fina sin tener que calcular una línea aparte cada frame.
-  obj.center.set(0.5, 1);
-  obj.position.copy(anchor);
-  obj.visible = false;
-  scene.add(obj);
-
-  const entry = { obj, anchor };
-  labelObjects.set(clave, entry);
-  return entry;
-}
-
-async function actualizarEtiquetas() {
-  if (!modoEtiquetas) return;
-  const claves = clavesActivasParaEtiquetas();
-  // Uno por uno, no Promise.all: pedirle al worker de Fragments varias
-  // resoluciones de GUIDs en paralelo hace que pierda la mayoría de las
-  // respuestas en silencio (sin error) — se probó y quedó documentado.
-  for (const c of claves) {
-    try {
-      await obtenerOCrearLabel(c);
-    } catch (err) {
-      console.error(`[visor-qr] no se pudo crear la etiqueta de ${c}:`, err);
-    }
-  }
-  // Fuerza un recálculo inmediato (no esperar al próximo throttle) para que
-  // el cambio de filtro se note al toque, no 200 ms después.
-  primerChequeoEtiquetas = true;
-  recalcularVisibilidadEtiquetas();
-}
-
-function ocultarTodasLasEtiquetas() {
-  for (const { obj } of labelObjects.values()) obj.visible = false;
-}
-
-let recalculandoEtiquetas = false;
-
-function actualizarEtiquetasFrame(now) {
-  if (now - ultimaActualizacionEtiquetas < INTERVALO_ETIQUETAS_MS) return;
-  ultimaActualizacionEtiquetas = now;
-
-  // Si la cámara no se movió desde el último chequeo, no hay nada que
-  // recalcular: en obra, con el celular quieto leyendo la ficha, esto
-  // ahorra CPU y batería.
-  const camQuietaMisma =
-    !primerChequeoEtiquetas &&
-    camera.position.distanceToSquared(ultimaCamPos) < 1e-8 &&
-    camera.quaternion.angleTo(ultimaCamQuat) < 1e-4;
-  if (camQuietaMisma) return;
-
-  ultimaCamPos.copy(camera.position);
-  ultimaCamQuat.copy(camera.quaternion);
-  primerChequeoEtiquetas = false;
-
-  recalcularVisibilidadEtiquetas();
-}
-
-async function recalcularVisibilidadEtiquetas() {
-  // El raycast de Fragments es async (corre en el worker); si todavía hay
-  // uno en vuelo, no se apilan más — se recalcula en el próximo tick.
-  if (recalculandoEtiquetas) return;
-  recalculandoEtiquetas = true;
-  try {
-    const clavesActivas = clavesActivasParaEtiquetas();
-    const pendientes = [];
-
-    for (const [clave, entry] of labelObjects) {
-      if (!clavesActivas.has(clave)) {
-        entry.obj.visible = false;
-        continue;
-      }
-      pendientes.push({ clave, entry });
-    }
-
-    // Oculta si algo del modelo tapa la pieza desde este ángulo de cámara.
-    // Fragments usa mallas propias (BatchedMesh/LOD) que no son compatibles
-    // con THREE.Raycaster genérico: hay que usar el raycast propio del
-    // modelo, que resuelve en base a un punto de pantalla (mouse en NDC).
-    // Uno por uno (no Promise.all): el worker de Fragments pierde respuestas
-    // en silencio si se lo llama muchas veces en paralelo (ver actualizarEtiquetas).
-    const resultados = [];
-    for (const { clave, entry } of pendientes) {
-      const distanciaAlAnclaje = camera.position.distanceTo(entry.anchor);
-      const ndc = entry.anchor.clone().project(camera);
-      const mouse = new THREE.Vector2(ndc.x, ndc.y);
-      let oculto = false;
-      try {
-        const hit = await model.raycast({ camera, mouse, dom: renderer.domElement });
-        if (hit && hit.distance < distanciaAlAnclaje - 0.05) oculto = true;
-      } catch {
-        oculto = false; // ante la duda, mostrar antes que esconder sin motivo
-      }
-      resultados.push({ clave, entry, distanciaAlAnclaje, oculto, ndc });
-    }
-
-    const candidatos = [];
-    for (const r of resultados) {
-      if (r.oculto) {
-        r.entry.obj.visible = false;
-        continue;
-      }
-      const x = (r.ndc.x * 0.5 + 0.5) * window.innerWidth;
-      const y = (-r.ndc.y * 0.5 + 0.5) * window.innerHeight;
-      candidatos.push({ ...r, x, y });
-    }
-
-    // Desempate por solapamiento en pantalla: la más cercana a cámara gana.
-    candidatos.sort((a, b) => a.distanciaAlAnclaje - b.distanciaAlAnclaje);
-    const ANCHO_ETIQUETA = 130;
-    const ALTO_ETIQUETA = 46;
-    const ocupados = [];
-    for (const c of candidatos) {
-      const caja = {
-        izq: c.x - ANCHO_ETIQUETA / 2,
-        der: c.x + ANCHO_ETIQUETA / 2,
-        arr: c.y - ALTO_ETIQUETA,
-        abj: c.y,
-      };
-      const solapa = ocupados.some(
-        (o) => !(caja.der < o.izq || caja.izq > o.der || caja.abj < o.arr || caja.arr > o.abj),
-      );
-      if (solapa) {
-        c.entry.obj.visible = false;
-      } else {
-        c.entry.obj.visible = true;
-        ocupados.push(caja);
-      }
-    }
-  } finally {
-    recalculandoEtiquetas = false;
-  }
-}
-
-function actualizarClaseBotonEtiquetas() {
-  els.labelsToggle.classList.toggle("activo", modoEtiquetas);
-  els.labelsToggle.textContent = modoEtiquetas ? "Ocultar etiquetas" : "Ver etiquetas";
-}
-
-function initLabelsToggle() {
-  modoEtiquetas = sessionStorage.getItem("modoEtiquetas") === "true";
-  actualizarClaseBotonEtiquetas();
-
-  els.labelsToggle.addEventListener("click", async () => {
-    modoEtiquetas = !modoEtiquetas;
-    sessionStorage.setItem("modoEtiquetas", String(modoEtiquetas));
-    actualizarClaseBotonEtiquetas();
-    if (modoEtiquetas) await actualizarEtiquetas();
-    else ocultarTodasLasEtiquetas();
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Ficha / UI
 // ---------------------------------------------------------------------------
 function mostrarFicha(codigo, entrada) {
@@ -761,7 +547,6 @@ async function main() {
   initScene();
   initFichaToggle();
   initMenu();
-  initLabelsToggle();
   await initFragments();
 
   [mapeoCache, familiasData] = await Promise.all([cargarMapeo(), cargarFamilias()]);

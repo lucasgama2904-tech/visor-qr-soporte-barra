@@ -1,6 +1,9 @@
-// Verificación de integridad del filtro por familia y el modo etiquetas
-// (Función 1 y Función 2 sobre familias.json). Requiere el visor sirviendo
-// en localhost:8080 (`npm run serve`).
+// Verificación de integridad del filtro por familia (Función 1, sobre
+// familias.json). Requiere el visor sirviendo en localhost:8080
+// (`npm run serve`).
+//
+// El modo etiquetas (Función 2) se sacó del visor: no acompañaba bien a
+// la pieza al girar la cámara y no se ocultaba del todo.
 //
 // Uso: node tools/test-familias.mjs
 
@@ -30,14 +33,6 @@ async function esperarMenuAbierto() {
   if (!yaAbierto) {
     await page.click("#menu-toggle");
     await page.waitForFunction(() => document.querySelector("#menu-panel")?.classList.contains("open"), { timeout: 10000 });
-  }
-}
-
-async function cerrarMenuSiAbierto() {
-  const abierto = await page.$eval("#menu-panel", (el) => el.classList.contains("open"));
-  if (abierto) {
-    await page.click("#menu-close");
-    await page.waitForFunction(() => !document.querySelector("#menu-panel")?.classList.contains("open"), { timeout: 5000 });
   }
 }
 
@@ -78,15 +73,9 @@ await page.waitForFunction(() => document.querySelector("#ficha")?.hidden === tr
 await page.waitForFunction(() => new URL(window.location.href).searchParams.toString() === "", { timeout: 15000 });
 chequear(true, "limpiar filtros deja la URL sin parámetros");
 
-// --- 6. Modo etiquetas: aparecen tarjetas ancladas a las piezas de la familia activa ---
-await esperarMenuAbierto();
-await page.locator(".chip", { hasText: "Diagonales Este-Oeste" }).click();
-await page.waitForFunction(() => document.querySelector("#labels-toggle")?.hidden === false, { timeout: 15000 });
-await cerrarMenuSiAbierto();
-await page.click("#labels-toggle");
-await page.waitForFunction(() => document.querySelectorAll(".pieza-label").length > 0, { timeout: 15000 });
-const etiquetas = await page.$$eval(".pieza-label .marca", (els) => els.map((e) => e.textContent));
-chequear(etiquetas.length > 0, `al menos una etiqueta visible (encontradas: ${etiquetas.length})`);
+// --- 6. El botón/estilos del modo etiquetas (removido) no deben existir ---
+const quedaBotonEtiquetas = (await page.$("#labels-toggle")) !== null;
+chequear(!quedaBotonEtiquetas, "no quedó rastro del botón de modo etiquetas (removido)");
 
 console.log(`\nTotal: ${fallas === 0 ? "todo OK" : `${fallas} falla(s)`}`);
 console.log("Errores de consola/página:", errores.length ? errores : "ninguno");

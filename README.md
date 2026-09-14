@@ -61,8 +61,37 @@ desajustes si se reconvierte el IFC más adelante.
 
 ## 5. Publicar
 
-Subir el contenido de `web/` (y solo eso) al hosting definitivo. Es 100%
-estático: no requiere backend ni base de datos.
+El sitio en vivo es:
+
+```
+https://lucasgama2904-tech.github.io/visor-qr-soporte-barra/
+```
+
+Lo sirve GitHub Pages desde la rama `gh-pages`, que tiene el **interior de
+`web/` en su raíz** (no la carpeta `web/` en sí). Ojo con esto: pushear a
+`main` NO actualiza el sitio. Después de cada cambio hay que correr el build
+y publicar el subárbol:
+
+```
+npm run build
+git add -A && git commit -m "..."
+git push origin main
+git subtree push --prefix web origin gh-pages
+```
+
+Y antes de publicar, subir `CACHE` en `web/sw.js` (`visor-qr-vN` -> `vN+1`).
+Sin eso, los celulares que ya abrieron el visor siguen sirviendo la versión
+vieja desde el caché offline. Con el número nuevo, el service worker se
+reinstala, borra el caché anterior y la página se recarga sola una vez.
+
+Para comprobar qué está publicado de verdad, conviene pedir los archivos al
+sitio en lugar de mirar el navegador propio (que tiene caché):
+
+```
+curl -s https://lucasgama2904-tech.github.io/visor-qr-soporte-barra/index.html
+```
+
+El visor es 100% estático: no requiere backend ni base de datos.
 
 ## 6. Generar el PDF de etiquetas
 

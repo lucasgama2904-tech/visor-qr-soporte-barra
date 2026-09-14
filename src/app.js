@@ -585,6 +585,23 @@ main().catch((err) => {
 // Service worker (cache offline)
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
+    // Si ya habia un service worker controlando la pagina, lo que esta a la
+    // vista viene del cache viejo. Cuando entra una version nueva (skipWaiting
+    // + clients.claim en sw.js) se dispara "controllerchange": ahi recargamos
+    // una sola vez, para que el celular no siga mostrando la version anterior
+    // hasta la proxima apertura. El visor relee ?p= y ?familia= de la URL, asi
+    // que la recarga vuelve a la misma pieza.
+    //
+    // Si no habia controlador es la primera visita del dispositivo: el SW se
+    // instala recien ahora y lo que esta en pantalla ya es lo ultimo, no hay
+    // nada que recargar.
+    const habiaControlador = Boolean(navigator.serviceWorker.controller);
+    let recargando = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!habiaControlador || recargando) return;
+      recargando = true;
+      window.location.reload();
+    });
     navigator.serviceWorker.register("./sw.js").catch(() => {});
   });
 }

@@ -4,7 +4,7 @@
 //
 // Subí la versión del cache cada vez que reemplaces modelo.frag o
 // mapeo_QR.json en producción, para forzar la actualización.
-const CACHE = "visor-qr-v5";
+const CACHE = "visor-qr-v6";
 
 const PRECACHE_URLS = [
   "./",
@@ -26,7 +26,7 @@ const PRECACHE_URLS = [
 // has redirections"). Por eso se reconstruye una Response limpia antes de
 // guardarla.
 async function fetchAndStripRedirect(url) {
-  const response = await fetch(url, { redirect: "follow" });
+  const response = await fetch(url, { redirect: "follow", cache: "reload" });
   if (!response.redirected) return response;
   const body = await response.blob();
   return new Response(body, {
